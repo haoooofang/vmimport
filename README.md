@@ -8,3 +8,4 @@
 2. 运行的机器需有 EC2, S3, IAM 相应权限;
 3. 程序运行成功后, 仍需等待任务完成, 需要 1-2 小时；
 4. 关于镜像格式等更多信息, 请参考 https://docs.aws.amazon.com/vm-import/latest/userguide/vmie_prereqs.html
+5. 预设为 OVA 格式镜像, 其它格式要求请参考上方链接.

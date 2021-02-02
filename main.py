@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import sys
-
+import botocore
 import boto3
 
 REGION = 'cn-northwest-1'
@@ -33,9 +33,10 @@ path = options.input
 bucket_name = options.bucket
 file_name = os.path.basename(path)
 bucket = s3.Bucket(bucket_name)
-obj_key = PREFIX + file_name
+s3_obj_key = PREFIX + file_name
 
-s3_obj = bucket.Object(obj_key)
+# 不存在也不会报错
+s3_obj = bucket.Object(s3_obj_key)
 vmimport_role = iam.Role(ROLE_NAME)
 
 # 判断 disk image 文件是否存在
@@ -44,16 +45,20 @@ if not os.path.isfile(path):
     exit(1)
 
 # 判断 bucket 是否存在,
-if bucket_name not in [i.name for i in s3.buckets.all()]:
-    print("Bucket {} doesn't exist".format(bucket_name))
-    exit(1)
+try:
+    s3.meta.client.head_bucket(Bucket=bucket_name)
+except botocore.exceptions.ClientError as err:
+    if err.response['Error']['Code'] == '404':
+        print("Bucket {} doesn't exist".format(bucket_name))
+        exit(1)
 
 
 # upload to S3
 def image_upload():
     with open(path, 'rb') as data:
+        print("File is being uploaded to S3.")
         s3_obj.upload_fileobj(data)
-    print("File is uploaded.")
+    print("Uploading is finished.")
     return s3_obj
 
 
@@ -92,8 +97,8 @@ def role_create():
                     "s3:ListBucket"
                 ],
                 "Resource": [
-                    "arn:vmimport-cn:s3:::" + bucket_name,
-                    "arn:vmimport-cn:s3:::" + bucket_name + "/*"
+                    "arn:aws-cn:s3:::" + bucket_name,
+                    "arn:aws-cn:s3:::" + bucket_name + "/*"
                 ]
             },
             {
@@ -106,8 +111,8 @@ def role_create():
                     "s3:GetBucketAcl"
                 ],
                 "Resource": [
-                    "arn:vmimport-cn:s3:::" + bucket_name,
-                    "arn:vmimport-cn:s3:::" + bucket_name + "/*"
+                    "arn:aws-cn:s3:::" + bucket_name,
+                    "arn:aws-cn:s3:::" + bucket_name + "/*"
                 ]
             },
             {
@@ -157,18 +162,32 @@ def role_create():
 # import image
 def main():
     global s3_obj, vmimport_role
-    if s3_obj not in bucket.objects.all():
-        s3_obj = image_upload()
+
+    # role 不存在则创建
     if vmimport_role not in iam.roles.all():
         vmimport_role = role_create()
         vmimport_role.load()
+    else:
+        print("Role {} already exists.".format(vmimport_role.name))
+
+    # 文件如果 S3 中不存在则上传
+    try:
+        s3.meta.client.head_object(
+            Bucket=bucket_name,
+            Key=s3_obj.key
+        )
+    except botocore.exceptions.ClientError as err:
+        if err.response['Error']['Code'] == '404':
+            s3_obj = image_upload()
+
+    # 开始导入
     response = ec2.meta.client.import_image(
-        Architecture='amd64',
+        Architecture='x86_64',
         DiskContainers=[
             {
                 'Description': 'System Disk',
                 'DeviceName': '/dev/sda',
-                'Format': 'VMDK',
+                'Format': 'OVA',
                 'UserBucket': {
                     'S3Bucket': s3_obj.bucket_name,
                     'S3Key': s3_obj.key
@@ -187,7 +206,7 @@ def main():
         ]
     )
     task_status = response.get('ImportImageTasks')[0].get('Status')
-    print(task_status)
+    print("Task {} is at {} status.".format(import_task_id, task_status))
 
 
 if __name__ == "__main__":
